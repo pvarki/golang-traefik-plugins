@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -108,6 +109,19 @@ func (p *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	} else {
 		req.Header.Del(p.clientCertDNHeader)
 		req.Header.Del(p.clientCertSerialHeader)
+		if redirectURL, ok := redirectURLWithoutMTLSSubdomain(req); ok {
+			log.Printf(
+				"WARN %s no verified client certificate (%s), redirecting to %s for %s %s",
+				p.logPrefix,
+				reason,
+				redirectURL,
+				req.Method,
+				req.URL.Path,
+			)
+			http.Redirect(rw, req, redirectURL, http.StatusFound)
+
+			return
+		}
 		log.Printf(
 			"ERROR %s no verified client certificate (%s), cleared legacy headers for %s %s",
 			p.logPrefix,
@@ -136,6 +150,52 @@ func normalizeHeaderName(value string, fallback string) string {
 	}
 
 	return value
+}
+
+func redirectURLWithoutMTLSSubdomain(req *http.Request) (string, bool) {
+	if req == nil {
+		return "", false
+	}
+
+	host := strings.TrimSpace(req.Host)
+	if host == "" {
+		return "", false
+	}
+
+	hostWithoutPort := host
+	port := ""
+	if parsedHost, parsedPort, err := net.SplitHostPort(host); err == nil {
+		hostWithoutPort = parsedHost
+		port = parsedPort
+	}
+
+	if !strings.HasPrefix(strings.ToLower(hostWithoutPort), "mtls.") {
+		return "", false
+	}
+
+	targetHost := hostWithoutPort[len("mtls."):]
+	if targetHost == "" {
+		return "", false
+	}
+
+	if port != "" {
+		targetHost = net.JoinHostPort(targetHost, port)
+	}
+
+	scheme := "https"
+	if req.TLS == nil {
+		scheme = "http"
+	}
+
+	requestURI := "/"
+	if req.URL != nil {
+		requestURI = req.URL.RequestURI()
+		if requestURI == "" {
+			requestURI = "/"
+		}
+	}
+
+	return fmt.Sprintf("%s://%s%s", scheme, targetHost, requestURI), true
 }
 
 func verifiedClientLeaf(req *http.Request) (*x509.Certificate, string) {
