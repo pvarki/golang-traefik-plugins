@@ -1,8 +1,18 @@
 // Package traefik_callsign_validity provides a Traefik middleware that
-// authorizes incoming mTLS requests by sending the client cert's CommonName
-// (the "callsign") to a rasenmaeher-api HTTP endpoint and forwarding only on
-// a positive validity response. Negative response, timeout, or any transport
-// error fails closed with HTTP 403.
+// annotates incoming mTLS requests with the result of a callsign validity
+// check: it sends the client cert's CommonName (the "callsign") to a
+// rasenmaeher-api HTTP endpoint and records the verdict in request headers.
+//
+// This middleware never blocks or redirects on its own — it ALWAYS forwards.
+// It sets:
+//   - the callsign header (default "Callsign") to the cert CN when a verified
+//     client certificate is present, and
+//   - the validity header (default "Callsign-Valid") to "true" only when the
+//     callsign is confirmed valid, otherwise "false" (no/unverified cert,
+//     empty CN, revoked/unknown callsign, or validity-service error).
+//
+// A downstream middleware (callsign-redirect) decides what to do with an
+// invalid verdict, so all redirect/deny policy lives in a single place.
 //
 // Implementation note: this plugin uses stdlib net/http rather than a
 // websocket library because Yaegi (Traefik's plugin interpreter) does not
@@ -29,7 +39,11 @@ import (
 const (
 	defaultRequestTimeoutSeconds = 3
 	defaultCallsignHeader        = "Callsign"
+	defaultValidityHeader        = "Callsign-Valid"
 	secretHeader                 = "Validity-Secret"
+
+	validityTrue  = "true"
+	validityFalse = "false"
 )
 
 // Config is the user-facing plugin configuration.
@@ -38,6 +52,7 @@ type Config struct {
 	SharedSecretEnv       string `json:"sharedSecretEnv,omitempty"`
 	RequestTimeoutSeconds int    `json:"requestTimeoutSeconds,omitempty"`
 	CallsignHeader        string `json:"callsignHeader,omitempty"`
+	ValidityHeader        string `json:"validityHeader,omitempty"`
 }
 
 // CreateConfig returns a Config populated with safe defaults.
@@ -45,6 +60,7 @@ func CreateConfig() *Config {
 	return &Config{
 		RequestTimeoutSeconds: defaultRequestTimeoutSeconds,
 		CallsignHeader:        defaultCallsignHeader,
+		ValidityHeader:        defaultValidityHeader,
 	}
 }
 
@@ -66,6 +82,7 @@ type Plugin struct {
 	secret         string
 	requestTimeout time.Duration
 	callsignHeader string
+	validityHeader string
 	client         *http.Client
 }
 
@@ -83,10 +100,8 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 	}
 
 	requestTO := secondsOr(config.RequestTimeoutSeconds, defaultRequestTimeoutSeconds)
-	hdr := strings.TrimSpace(config.CallsignHeader)
-	if hdr == "" {
-		hdr = defaultCallsignHeader
-	}
+	callsignHdr := orDefault(config.CallsignHeader, defaultCallsignHeader)
+	validityHdr := orDefault(config.ValidityHeader, defaultValidityHeader)
 
 	secret := ""
 	if envName := strings.TrimSpace(config.SharedSecretEnv); envName != "" {
@@ -103,15 +118,19 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		url:            config.RmapiURL,
 		secret:         secret,
 		requestTimeout: requestTO,
-		callsignHeader: hdr,
+		callsignHeader: callsignHdr,
+		validityHeader: validityHdr,
 		client:         &http.Client{Timeout: requestTO},
 	}
 
-	log.Printf("INFO %s initialized; rmapi=%s timeout=%s", logPrefix, p.url, p.requestTimeout)
+	log.Printf("INFO %s initialized; rmapi=%s timeout=%s callsignHeader=%s validityHeader=%s",
+		logPrefix, p.url, p.requestTimeout, p.callsignHeader, p.validityHeader)
 	return p, nil
 }
 
-// ServeHTTP authorizes the request via the validity HTTP endpoint. Fail-closed.
+// ServeHTTP records the validity verdict in request headers and always
+// forwards. It never returns an error response (a panic is the only
+// exception). Downstream middleware acts on the verdict.
 func (p *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -122,32 +141,38 @@ func (p *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 	}()
 
+	// Authoritatively reset both headers so a client cannot spoof them.
+	req.Header.Del(p.callsignHeader)
+	req.Header.Set(p.validityHeader, validityFalse)
+
 	cert, reason := verifiedClientLeaf(req)
 	if cert == nil {
-		log.Printf("INFO %s denying %s %s: %s", p.logPrefix, req.Method, req.URL.Path, reason)
-		http.Error(rw, "forbidden: no verified client certificate", http.StatusForbidden)
+		log.Printf("INFO %s no verified client certificate (%s) for %s %s; verdict=false", p.logPrefix, reason, req.Method, req.URL.Path)
+		p.next.ServeHTTP(rw, req)
 		return
 	}
 	callsign := strings.TrimSpace(cert.Subject.CommonName)
 	if callsign == "" {
-		log.Printf("INFO %s denying %s %s: cert has empty CN", p.logPrefix, req.Method, req.URL.Path)
-		http.Error(rw, "forbidden: cert has no callsign", http.StatusForbidden)
+		log.Printf("INFO %s cert has empty CN for %s %s; verdict=false", p.logPrefix, req.Method, req.URL.Path)
+		p.next.ServeHTTP(rw, req)
 		return
 	}
+
+	// Expose the authenticated callsign regardless of validity.
+	req.Header.Set(p.callsignHeader, callsign)
 
 	valid, err := p.check(callsign)
 	if err != nil {
-		log.Printf("ERROR %s validity check failed for callsign=%q: %v", p.logPrefix, callsign, err)
-		http.Error(rw, "forbidden: validity service unavailable", http.StatusForbidden)
+		log.Printf("ERROR %s validity check failed for callsign=%q: %v; verdict=false", p.logPrefix, callsign, err)
+		p.next.ServeHTTP(rw, req)
 		return
 	}
-	if !valid {
-		log.Printf("INFO %s denying request: callsign=%q is not valid", p.logPrefix, callsign)
-		http.Error(rw, "forbidden: callsign revoked or unknown", http.StatusForbidden)
-		return
+	if valid {
+		req.Header.Set(p.validityHeader, validityTrue)
+	} else {
+		log.Printf("INFO %s callsign=%q is not valid; verdict=false", p.logPrefix, callsign)
 	}
 
-	req.Header.Set(p.callsignHeader, callsign)
 	p.next.ServeHTTP(rw, req)
 }
 
@@ -206,6 +231,14 @@ func secondsOr(value int, fallback int) time.Duration {
 		return time.Duration(fallback) * time.Second
 	}
 	return time.Duration(value) * time.Second
+}
+
+func orDefault(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func pluginLogPrefix(name string) string {

@@ -1,0 +1,7 @@
+displayName: Callsign Redirect
+type: middleware
+import: github.com/pvarki/traefik-callsign-redirect
+summary: Acts on the callsign validity verdict header. Forwards when valid; otherwise redirects to the base domain (host minus "mtls.") or a configured URL, or denies with 403 if no target.
+testData:
+  validityHeader: Callsign-Valid
+  redirectStatus: 302
