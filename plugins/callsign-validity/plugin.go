@@ -28,8 +28,8 @@ import (
 
 const (
 	defaultRequestTimeoutSeconds = 3
-	defaultCallsignHeader        = "X-Callsign"
-	secretHeader                 = "X-Validity-Secret"
+	defaultCallsignHeader        = "Callsign"
+	secretHeader                 = "Validity-Secret"
 )
 
 // Config is the user-facing plugin configuration.

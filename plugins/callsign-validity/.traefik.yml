@@ -6,4 +6,4 @@ testData:
   rmapiURL: http://opendefense-rmapi.opendefense-system.svc.cluster.local:8000/api/v1/internal/callsign-validity/check
   sharedSecretEnv: RM_CALLSIGN_VALIDITY_SECRET
   requestTimeoutSeconds: 3
-  callsignHeader: X-Callsign
+  callsignHeader: Callsign
