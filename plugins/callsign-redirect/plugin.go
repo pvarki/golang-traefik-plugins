@@ -2,14 +2,13 @@
 // do with the callsign validity verdict produced upstream by the
 // callsign-validity middleware.
 //
-// It reads the validity header (default "Callsign-Valid"):
-//   - "true"  → forward to the next handler unchanged.
-//   - anything else (invalid/revoked/unknown/no-cert/service-error) → redirect.
-//
-// The redirect target is, in order of precedence:
-//  1. the configured redirectURL, if set; otherwise
-//  2. the same request path on the base domain (the host with a leading
-//     "mtls." stripped), e.g. mtls.example.org/foo → example.org/foo.
+// It reads the validity header (default "Callsign-Valid"); "true" forwards
+// unchanged. Otherwise it reads the reason header ("Callsign-Valid-Reason") to
+// pick an /error code (invalid -> unauthorized, no_cert -> mtls_fail, error ->
+// none) and acts in this order of precedence:
+//  1. the configured redirectURL, if set → redirect there verbatim; otherwise
+//  2. the base domain (the host with a leading "mtls." stripped) at /error with
+//     the reason code, e.g. mtls.example.org/foo → example.org/error?code=…
 //
 // If neither yields a target (no redirectURL and the host has no "mtls."
 // prefix), the request is denied with 403 rather than silently forwarded, so
@@ -31,6 +30,15 @@ const (
 	defaultValidityHeader = "Callsign-Valid"
 	defaultRedirectStatus = http.StatusFound
 	validityTrue          = "true"
+
+	reasonHeader = "Callsign-Valid-Reason"
+	errorPath    = "/error"
+
+	// Reason values (set by callsign-validity) mapped to UI /error codes.
+	reasonInvalid    = "invalid"
+	reasonError      = "error"
+	codeUnauthorized = "unauthorized"
+	codeMTLSFail     = "mtls_fail"
 )
 
 type Config struct {
@@ -102,15 +110,28 @@ func (p *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Map the failure reason to a UI /error code.
+	code := codeMTLSFail
+	switch strings.ToLower(strings.TrimSpace(req.Header.Get(reasonHeader))) {
+	case reasonInvalid:
+		code = codeUnauthorized
+	case reasonError:
+		code = "" // generic error page
+	}
+
 	dest := p.redirectURL
 	if dest == "" {
-		if computed, ok := redirectURLWithoutMTLSSubdomain(req); ok {
+		path := errorPath
+		if code != "" {
+			path += "?code=" + code
+		}
+		if computed, ok := redirectURLWithoutMTLSSubdomain(req, path); ok {
 			dest = computed
 		}
 	}
 	if dest == "" {
-		log.Printf("INFO %s invalid verdict and no redirect target for %s %s; denying", p.logPrefix, req.Method, req.URL.Path)
-		http.Error(rw, "forbidden: callsign not valid", http.StatusForbidden)
+		log.Printf("INFO %s invalid verdict and no redirect target for %s %s; denying with empty 403", p.logPrefix, req.Method, req.URL.Path)
+		rw.WriteHeader(http.StatusForbidden)
 		return
 	}
 
@@ -118,7 +139,7 @@ func (p *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	http.Redirect(rw, req, dest, p.redirectStatus)
 }
 
-func redirectURLWithoutMTLSSubdomain(req *http.Request) (string, bool) {
+func redirectURLWithoutMTLSSubdomain(req *http.Request, path string) (string, bool) {
 	if req == nil {
 		return "", false
 	}
@@ -150,15 +171,7 @@ func redirectURLWithoutMTLSSubdomain(req *http.Request) (string, bool) {
 		scheme = "http"
 	}
 
-	requestURI := "/"
-	if req.URL != nil {
-		requestURI = req.URL.RequestURI()
-		if requestURI == "" {
-			requestURI = "/"
-		}
-	}
-
-	return fmt.Sprintf("%s://%s%s", scheme, targetHost, requestURI), true
+	return fmt.Sprintf("%s://%s%s", scheme, targetHost, path), true
 }
 
 func pluginLogPrefix(name string) string {

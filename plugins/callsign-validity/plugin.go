@@ -6,10 +6,12 @@
 // This middleware never blocks or redirects on its own — it ALWAYS forwards.
 // It sets:
 //   - the callsign header (default "Callsign") to the cert CN when a verified
-//     client certificate is present, and
+//     client certificate is present;
 //   - the validity header (default "Callsign-Valid") to "true" only when the
-//     callsign is confirmed valid, otherwise "false" (no/unverified cert,
-//     empty CN, revoked/unknown callsign, or validity-service error).
+//     callsign is confirmed valid, otherwise "false"; and
+//   - the reason header ("Callsign-Valid-Reason") classifying why the verdict
+//     is what it is (ok/no_cert/invalid/error), so the downstream
+//     callsign-redirect middleware can pick the right error page.
 //
 // A downstream middleware (callsign-redirect) decides what to do with an
 // invalid verdict, so all redirect/deny policy lives in a single place.
@@ -40,10 +42,17 @@ const (
 	defaultRequestTimeoutSeconds = 3
 	defaultCallsignHeader        = "Callsign"
 	defaultValidityHeader        = "Callsign-Valid"
+	reasonHeader                 = "Callsign-Valid-Reason"
 	secretHeader                 = "Validity-Secret"
 
 	validityTrue  = "true"
 	validityFalse = "false"
+
+	// Reason values written to reasonHeader; consumed by callsign-redirect.
+	reasonOK      = "ok"      // verified cert, callsign valid
+	reasonNoCert  = "no_cert" // no cert
+	reasonInvalid = "invalid" // verified cert but callsign revoked/unknown
+	reasonError   = "error"   // validity service errored/timed out
 )
 
 // Config is the user-facing plugin configuration.
@@ -141,9 +150,11 @@ func (p *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 	}()
 
-	// Authoritatively reset both headers so a client cannot spoof them.
+	// Authoritatively reset all headers so a client cannot spoof them.
+	// Default reason is no_cert; each branch below refines it.
 	req.Header.Del(p.callsignHeader)
 	req.Header.Set(p.validityHeader, validityFalse)
+	req.Header.Set(reasonHeader, reasonNoCert)
 
 	cert, reason := verifiedClientLeaf(req)
 	if cert == nil {
@@ -163,13 +174,16 @@ func (p *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	valid, err := p.check(callsign)
 	if err != nil {
+		req.Header.Set(reasonHeader, reasonError)
 		log.Printf("ERROR %s validity check failed for callsign=%q: %v; verdict=false", p.logPrefix, callsign, err)
 		p.next.ServeHTTP(rw, req)
 		return
 	}
 	if valid {
 		req.Header.Set(p.validityHeader, validityTrue)
+		req.Header.Set(reasonHeader, reasonOK)
 	} else {
+		req.Header.Set(reasonHeader, reasonInvalid)
 		log.Printf("INFO %s callsign=%q is not valid; verdict=false", p.logPrefix, callsign)
 	}
 
