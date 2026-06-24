@@ -11,8 +11,9 @@
 //     the reason code, e.g. mtls.example.org/foo → example.org/error?code=…
 //
 // If neither yields a target (no redirectURL and the host has no "mtls."
-// prefix), the request is denied with 403 rather than silently forwarded, so
-// an invalid verdict never reaches a protected backend.
+// prefix or does not match baseDomain), the request is denied with 403 rather
+// than silently forwarded, so an invalid verdict never reaches a protected
+// backend.
 package traefik_callsign_redirect
 
 import (
@@ -45,6 +46,7 @@ type Config struct {
 	ValidityHeader string `json:"validityHeader,omitempty"`
 	RedirectURL    string `json:"redirectURL,omitempty"`
 	RedirectStatus int    `json:"redirectStatus,omitempty"`
+	BaseDomain     string `json:"baseDomain,omitempty"`
 }
 
 func CreateConfig() *Config {
@@ -61,6 +63,7 @@ type Plugin struct {
 	validityHeader string
 	redirectURL    string
 	redirectStatus int
+	baseDomain     string
 }
 
 func New(_ context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
@@ -88,10 +91,11 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		validityHeader: validityHdr,
 		redirectURL:    strings.TrimSpace(config.RedirectURL),
 		redirectStatus: status,
+		baseDomain:     strings.ToLower(strings.TrimSpace(config.BaseDomain)),
 	}
 
-	log.Printf("INFO %s initialized; validityHeader=%s redirectURL=%q status=%d",
-		logPrefix, p.validityHeader, p.redirectURL, p.redirectStatus)
+	log.Printf("INFO %s initialized; validityHeader=%s redirectURL=%q baseDomain=%q status=%d",
+		logPrefix, p.validityHeader, p.redirectURL, p.baseDomain, p.redirectStatus)
 	return p, nil
 }
 
@@ -125,7 +129,7 @@ func (p *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		if code != "" {
 			path += "?code=" + code
 		}
-		if computed, ok := redirectURLWithoutMTLSSubdomain(req, path); ok {
+		if computed, ok := redirectURLWithoutMTLSSubdomain(req, path, p.baseDomain); ok {
 			dest = computed
 		}
 	}
@@ -139,7 +143,7 @@ func (p *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	http.Redirect(rw, req, dest, p.redirectStatus)
 }
 
-func redirectURLWithoutMTLSSubdomain(req *http.Request, path string) (string, bool) {
+func redirectURLWithoutMTLSSubdomain(req *http.Request, path, baseDomain string) (string, bool) {
 	if req == nil {
 		return "", false
 	}
@@ -160,6 +164,9 @@ func redirectURLWithoutMTLSSubdomain(req *http.Request, path string) (string, bo
 	}
 	targetHost := hostWithoutPort[len("mtls."):]
 	if targetHost == "" {
+		return "", false
+	}
+	if baseDomain != "" && !strings.EqualFold(targetHost, baseDomain) {
 		return "", false
 	}
 	if port != "" {
