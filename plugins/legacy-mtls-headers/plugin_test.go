@@ -242,7 +242,7 @@ func TestServeHTTPOverRealHandshake(t *testing.T) {
 			if err != nil {
 				t.Fatalf("request: %v", err)
 			}
-			response.Body.Close()
+			_ = response.Body.Close()
 
 			if backendHeaders == nil {
 				t.Fatal("request was not forwarded to the backend")

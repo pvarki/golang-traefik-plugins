@@ -207,7 +207,7 @@ func (p *Plugin) check(callsign string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("http call: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return false, fmt.Errorf("unexpected status %d", resp.StatusCode)
