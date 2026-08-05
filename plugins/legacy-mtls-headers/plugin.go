@@ -2,7 +2,9 @@ package traefik_legacy_mtls_headers
 
 import (
 	"context"
+	"crypto/sha1"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -13,31 +15,35 @@ import (
 )
 
 const (
-	defaultClientCertDNHeader     = "X-ClientCert-DN"
-	defaultClientCertSerialHeader = "X-ClientCert-Serial"
+	defaultClientCertDNHeader          = "X-ClientCert-DN"
+	defaultClientCertSerialHeader      = "X-ClientCert-Serial"
+	defaultClientCertFingerprintHeader = "X-SSL-Client-Fingerprint"
 )
 
 // Config controls output header names for legacy mTLS compatibility.
 type Config struct {
-	ClientCertDNHeader     string `json:"clientCertDNHeader,omitempty"`
-	ClientCertSerialHeader string `json:"clientCertSerialHeader,omitempty"`
+	ClientCertDNHeader          string `json:"clientCertDNHeader,omitempty"`
+	ClientCertSerialHeader      string `json:"clientCertSerialHeader,omitempty"`
+	ClientCertFingerprintHeader string `json:"clientCertFingerprintHeader,omitempty"`
 }
 
 // CreateConfig creates the default plugin configuration.
 func CreateConfig() *Config {
 	return &Config{
-		ClientCertDNHeader:     defaultClientCertDNHeader,
-		ClientCertSerialHeader: defaultClientCertSerialHeader,
+		ClientCertDNHeader:          defaultClientCertDNHeader,
+		ClientCertSerialHeader:      defaultClientCertSerialHeader,
+		ClientCertFingerprintHeader: defaultClientCertFingerprintHeader,
 	}
 }
 
 // Plugin injects legacy client certificate headers for upstream services.
 type Plugin struct {
-	next                   http.Handler
-	name                   string
-	logPrefix              string
-	clientCertDNHeader     string
-	clientCertSerialHeader string
+	next                        http.Handler
+	name                        string
+	logPrefix                   string
+	clientCertDNHeader          string
+	clientCertSerialHeader      string
+	clientCertFingerprintHeader string
 }
 
 // New creates a new middleware instance.
@@ -57,20 +63,25 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 
 	clientCertDNHeader := normalizeHeaderName(config.ClientCertDNHeader, defaultClientCertDNHeader)
 	clientCertSerialHeader := normalizeHeaderName(config.ClientCertSerialHeader, defaultClientCertSerialHeader)
-
+	clientCertFingerprintHeader := normalizeHeaderName(
+		config.ClientCertFingerprintHeader,
+		defaultClientCertFingerprintHeader,
+	)
 	log.Printf(
-		"INFO %s initialized with headers dn=%q serial=%q",
+		"INFO %s initialized with headers dn=%q serial=%q fingerprint=%q",
 		logPrefix,
 		clientCertDNHeader,
 		clientCertSerialHeader,
+		clientCertFingerprintHeader,
 	)
 
 	return &Plugin{
-		next:                   next,
-		name:                   name,
-		logPrefix:              logPrefix,
-		clientCertDNHeader:     clientCertDNHeader,
-		clientCertSerialHeader: clientCertSerialHeader,
+		next:                        next,
+		name:                        name,
+		logPrefix:                   logPrefix,
+		clientCertDNHeader:          clientCertDNHeader,
+		clientCertSerialHeader:      clientCertSerialHeader,
+		clientCertFingerprintHeader: clientCertFingerprintHeader,
 	}, nil
 }
 
@@ -105,9 +116,11 @@ func (p *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 		req.Header.Set(p.clientCertDNHeader, cert.Subject.String())
 		req.Header.Set(p.clientCertSerialHeader, serial)
+		req.Header.Set(p.clientCertFingerprintHeader, formatFingerprintHex(cert))
 	} else {
 		req.Header.Del(p.clientCertDNHeader)
 		req.Header.Del(p.clientCertSerialHeader)
+		req.Header.Del(p.clientCertFingerprintHeader)
 		log.Printf(
 			"INFO %s no verified client certificate (%s), cleared legacy headers for %s %s",
 			p.logPrefix,
@@ -171,4 +184,14 @@ func formatSerialHex(serial *big.Int) string {
 	}
 
 	return value
+}
+
+func formatFingerprintHex(cert *x509.Certificate) string {
+	if cert == nil {
+		return ""
+	}
+
+	digest := sha1.Sum(cert.Raw)
+
+	return hex.EncodeToString(digest[:])
 }

@@ -5,9 +5,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"io"
 	"log"
 	"math/big"
@@ -19,20 +21,36 @@ import (
 )
 
 const (
-	callsign           = "ALPHA01"
-	certDN             = "CN=" + callsign + ",O=OpenDefence"
-	certSerial         = "0ABC"
-	spoofedDN          = "CN=admin"
-	spoofedSerial      = "0123456789ABCDEF"
-	customDNHeader     = "X-DN"
-	customSerialHeader = "X-Serial"
+	callsign                = "ALPHA01"
+	certDN                  = "CN=" + callsign + ",O=OpenDefence"
+	certSerial              = "0ABC"
+	spoofedDN               = "CN=admin"
+	spoofedSerial           = "0123456789ABCDEF"
+	spoofedFingerprint      = "0123456789abcdef0123456789abcdef01234567" // pragma: allowlist secret
+	customDNHeader          = "X-DN"
+	customSerialHeader      = "X-Serial"
+	customFingerprintHeader = "X-Fingerprint"
 )
+
+var (
+	certRaw         = []byte("test-certificate-der")
+	certFingerprint = hexSHA1(certRaw)
+)
+
+func hexSHA1(raw []byte) string {
+	digest := sha1.Sum(raw)
+	return hex.EncodeToString(digest[:])
+}
 
 // Ensure normalization.
 var (
 	configDefault       = CreateConfig()
-	configBlankHeaders  = &Config{ClientCertDNHeader: "  ", ClientCertSerialHeader: "\t"}
-	configCustomHeaders = &Config{ClientCertDNHeader: " " + customDNHeader + " ", ClientCertSerialHeader: " " + customSerialHeader + " "}
+	configBlankHeaders  = &Config{ClientCertDNHeader: "  ", ClientCertSerialHeader: "\t", ClientCertFingerprintHeader: " "}
+	configCustomHeaders = &Config{
+		ClientCertDNHeader:          " " + customDNHeader + " ",
+		ClientCertSerialHeader:      " " + customSerialHeader + " ",
+		ClientCertFingerprintHeader: " " + customFingerprintHeader + " ",
+	}
 )
 
 func TestMain(m *testing.M) {
@@ -45,7 +63,7 @@ func verifiedTLS(chains ...[]*x509.Certificate) *tls.ConnectionState {
 }
 
 var (
-	leaf              = &x509.Certificate{Subject: pkix.Name{CommonName: callsign, Organization: []string{"OpenDefence"}}, SerialNumber: big.NewInt(0xabc)}
+	leaf              = &x509.Certificate{Subject: pkix.Name{CommonName: callsign, Organization: []string{"OpenDefence"}}, SerialNumber: big.NewInt(0xabc), Raw: certRaw}
 	tlsNoCert         = &tls.ConnectionState{}
 	tlsPeerUnverified = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}}
 	tlsNilLeaf        = verifiedTLS([]*x509.Certificate{nil})
@@ -58,19 +76,22 @@ func spoofedHeaders() http.Header {
 	headers := http.Header{}
 	headers[defaultClientCertDNHeader] = []string{spoofedDN, spoofedDN}
 	headers.Set(defaultClientCertSerialHeader, spoofedSerial)
+	headers.Set(defaultClientCertFingerprintHeader, spoofedFingerprint)
 	headers.Set(customDNHeader, spoofedDN)
 	headers.Set(customSerialHeader, spoofedSerial)
+	headers.Set(customFingerprintHeader, spoofedFingerprint)
 	return headers
 }
 
 type serveHTTPCase struct {
-	name          string
-	config        *Config
-	tlsState      *tls.ConnectionState
-	backendPanics bool
-	wantDN        string
-	wantSerial    string
-	wantStatus    int
+	name            string
+	config          *Config
+	tlsState        *tls.ConnectionState
+	backendPanics   bool
+	wantDN          string
+	wantSerial      string
+	wantFingerprint string
+	wantStatus      int
 }
 
 func (testCase serveHTTPCase) newRequest() *http.Request {
@@ -98,12 +119,12 @@ func assertHeader(t *testing.T, header http.Header, name string, want string) {
 
 func TestServeHTTP(t *testing.T) {
 	testCases := []serveHTTPCase{
-		{name: "verified cert", config: configDefault, tlsState: tlsVerified, wantDN: certDN, wantSerial: certSerial},
-		{name: "leaf comes from the first non-empty chain", config: configDefault, tlsState: tlsSecondChain, wantDN: certDN, wantSerial: certSerial},
-		{name: "custom header names", config: configCustomHeaders, tlsState: tlsVerified, wantDN: certDN, wantSerial: certSerial},
-		{name: "blank header names fall back", config: configBlankHeaders, tlsState: tlsVerified, wantDN: certDN, wantSerial: certSerial},
-		{name: "nil config falls back", config: nil, tlsState: tlsVerified, wantDN: certDN, wantSerial: certSerial},
-		{name: "panic in the backend fails closed", config: configDefault, tlsState: tlsVerified, backendPanics: true, wantDN: certDN, wantSerial: certSerial, wantStatus: 500},
+		{name: "verified cert", config: configDefault, tlsState: tlsVerified, wantDN: certDN, wantSerial: certSerial, wantFingerprint: certFingerprint},
+		{name: "leaf comes from the first non-empty chain", config: configDefault, tlsState: tlsSecondChain, wantDN: certDN, wantSerial: certSerial, wantFingerprint: certFingerprint},
+		{name: "custom header names", config: configCustomHeaders, tlsState: tlsVerified, wantDN: certDN, wantSerial: certSerial, wantFingerprint: certFingerprint},
+		{name: "blank header names fall back", config: configBlankHeaders, tlsState: tlsVerified, wantDN: certDN, wantSerial: certSerial, wantFingerprint: certFingerprint},
+		{name: "nil config falls back", config: nil, tlsState: tlsVerified, wantDN: certDN, wantSerial: certSerial, wantFingerprint: certFingerprint},
+		{name: "panic in the backend fails closed", config: configDefault, tlsState: tlsVerified, backendPanics: true, wantDN: certDN, wantSerial: certSerial, wantFingerprint: certFingerprint, wantStatus: 500},
 
 		{name: "no TLS", config: configDefault, tlsState: nil},
 		{name: "TLS without a client cert", config: configDefault, tlsState: tlsNoCert},
@@ -134,12 +155,13 @@ func TestServeHTTP(t *testing.T) {
 			if backendRequest == nil {
 				t.Fatal("request was not forwarded to the backend")
 			}
-			dnHeader, serialHeader := defaultClientCertDNHeader, defaultClientCertSerialHeader
+			dnHeader, serialHeader, fingerprintHeader := defaultClientCertDNHeader, defaultClientCertSerialHeader, defaultClientCertFingerprintHeader
 			if testCase.config == configCustomHeaders {
-				dnHeader, serialHeader = customDNHeader, customSerialHeader
+				dnHeader, serialHeader, fingerprintHeader = customDNHeader, customSerialHeader, customFingerprintHeader
 			}
 			assertHeader(t, backendRequest.Header, dnHeader, testCase.wantDN)
 			assertHeader(t, backendRequest.Header, serialHeader, testCase.wantSerial)
+			assertHeader(t, backendRequest.Header, fingerprintHeader, testCase.wantFingerprint)
 
 			wantStatus := testCase.wantStatus
 			if wantStatus == 0 {
@@ -198,15 +220,17 @@ func newCertPair(t *testing.T) (*x509.CertPool, tls.Certificate) {
 
 func TestServeHTTPOverRealHandshake(t *testing.T) {
 	caPool, clientCert := newCertPair(t)
+	handshakeFingerprint := hexSHA1(clientCert.Certificate[0])
 
 	testCases := []struct {
-		name       string
-		clientAuth tls.ClientAuthType
-		clientCAs  *x509.CertPool
-		wantDN     string
-		wantSerial string
+		name            string
+		clientAuth      tls.ClientAuthType
+		clientCAs       *x509.CertPool
+		wantDN          string
+		wantSerial      string
+		wantFingerprint string
 	}{
-		{name: "cert verified", clientAuth: tls.RequireAndVerifyClientCert, clientCAs: caPool, wantDN: certDN, wantSerial: certSerial},
+		{name: "cert verified", clientAuth: tls.RequireAndVerifyClientCert, clientCAs: caPool, wantDN: certDN, wantSerial: certSerial, wantFingerprint: handshakeFingerprint},
 		{name: "cert accepted but never verified", clientAuth: tls.RequireAnyClientCert, clientCAs: x509.NewCertPool()},
 	}
 
@@ -249,6 +273,27 @@ func TestServeHTTPOverRealHandshake(t *testing.T) {
 			}
 			assertHeader(t, backendHeaders, defaultClientCertDNHeader, testCase.wantDN)
 			assertHeader(t, backendHeaders, defaultClientCertSerialHeader, testCase.wantSerial)
+			assertHeader(t, backendHeaders, defaultClientCertFingerprintHeader, testCase.wantFingerprint)
+		})
+	}
+}
+
+func TestFormatFingerprintHex(t *testing.T) {
+	testCases := []struct {
+		name string
+		cert *x509.Certificate
+		want string
+	}{
+		{name: "nil", cert: nil, want: ""},
+		{name: "sha1 of the raw der", cert: leaf, want: certFingerprint},
+		{name: "empty der still hashes", cert: &x509.Certificate{}, want: hexSHA1(nil)},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := formatFingerprintHex(testCase.cert); got != testCase.want {
+				t.Errorf("got %q, want %q", got, testCase.want)
+			}
 		})
 	}
 }
