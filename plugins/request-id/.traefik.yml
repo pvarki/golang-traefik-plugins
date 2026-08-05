@@ -1,0 +1,6 @@
+displayName: Request ID
+type: middleware
+import: github.com/pvarki/traefik-request-id
+summary: Set a fresh request id header on every request, overwriting any client-supplied value.
+testData:
+  headerName: X-Request-ID
