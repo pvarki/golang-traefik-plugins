@@ -37,13 +37,16 @@ func init() {
 	set = cfg.settings()
 	store = newIssuerStore(set.caBundlePath)
 
-	if set.dnsServer != "" {
-		net.DefaultResolver = &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&wasip1.Dialer{Timeout: set.timeout}).DialContext(ctx, "udp", set.dnsServer)
-			},
-		}
+	// The guest has no native UDP dial, so the resolver always needs stealthrocket.
+	// The address comes from the mounted /etc/resolv.conf unless dnsServer overrides it.
+	net.DefaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			if set.dnsServer != "" {
+				address = set.dnsServer
+			}
+			return (&wasip1.Dialer{Timeout: set.timeout}).DialContext(ctx, network, address)
+		},
 	}
 	checker = &ocspcheck.Checker{URL: set.ocspURL, Client: &http.Client{Timeout: set.timeout}}
 

@@ -43,7 +43,8 @@ type Config struct {
 	// The ABI hides the TLS chain and the CA is created at runtime, so it can
 	// be neither read from the connection nor inlined into a manifest.
 	CABundlePath string `json:"caBundlePath,omitempty"`
-	// DNSServer is the cluster resolver; the guest has no /etc/resolv.conf.
+	// DNSServer overrides the nameserver from the mounted /etc/resolv.conf.
+	// Normally unset.
 	DNSServer             string `json:"dnsServer,omitempty"`
 	CertHeader            string `json:"certHeader,omitempty"`
 	CallsignHeader        string `json:"callsignHeader,omitempty"`
