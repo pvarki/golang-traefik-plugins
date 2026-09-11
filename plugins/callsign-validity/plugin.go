@@ -1,264 +1,205 @@
-// Package traefik_callsign_validity provides a Traefik middleware that
-// annotates incoming mTLS requests with the result of a callsign validity
-// check: it sends the client cert's CommonName (the "callsign") to a
-// rasenmaeher-api HTTP endpoint and records the verdict in request headers.
-//
-// This middleware never blocks or redirects on its own — it ALWAYS forwards.
-// It sets:
-//   - the callsign header (default "Callsign") to the cert CN when a verified
-//     client certificate is present;
-//   - the validity header (default "Callsign-Valid") to "true" only when the
-//     callsign is confirmed valid, otherwise "false"; and
-//   - the reason header ("Callsign-Valid-Reason") classifying why the verdict
-//     is what it is (ok/no_cert/invalid/error), so the downstream
-//     callsign-redirect middleware can pick the right error page.
-//
-// A downstream middleware (callsign-redirect) decides what to do with an
-// invalid verdict, so all redirect/deny policy lives in a single place.
-//
-// Implementation note: this plugin uses stdlib net/http rather than a
-// websocket library because Yaegi (Traefik's plugin interpreter) does not
-// ship symbols for golang.org/x/net/websocket. The semantics are identical
-// for the per-request check protocol we use.
-package traefik_callsign_validity
+// Package main annotates mTLS requests with the OCSP status of the client
+// certificate. It never blocks; callsign-redirect acts on the verdict.
+package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/x509"
-	"encoding/json"
+	"encoding/pem"
 	"errors"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
 	"os"
-	"runtime/debug"
-	"strings"
+	"sync"
 	"time"
+
+	"github.com/pvarki/golang-traefik-plugins/internal/clientcert"
+	"github.com/pvarki/golang-traefik-plugins/internal/guest"
+	"github.com/pvarki/golang-traefik-plugins/internal/ocspcheck"
+	"golang.org/x/crypto/ocsp"
 )
 
 const (
+	defaultCallsignHeader = "Callsign"
+	defaultValidityHeader = "Callsign-Valid"
+	reasonHeader          = "Callsign-Valid-Reason"
+
 	defaultRequestTimeoutSeconds = 3
-	defaultCallsignHeader        = "Callsign"
-	defaultValidityHeader        = "Callsign-Valid"
-	reasonHeader                 = "Callsign-Valid-Reason"
-	secretHeader                 = "Validity-Secret"
+	// caReloadInterval picks up CA rotation without restarting Traefik.
+	caReloadInterval = 5 * time.Minute
 
 	validityTrue  = "true"
 	validityFalse = "false"
 
 	// Reason values written to reasonHeader; consumed by callsign-redirect.
-	reasonOK      = "ok"      // verified cert, callsign valid
+	reasonOK      = "ok"      // verified cert, OCSP says good
 	reasonNoCert  = "no_cert" // no cert
-	reasonInvalid = "invalid" // verified cert but callsign revoked/unknown
-	reasonError   = "error"   // validity service errored/timed out
+	reasonInvalid = "invalid" // OCSP says revoked or unknown
+	reasonError   = "error"   // responder errored, timed out, or failed validation
 )
 
-// Config is the user-facing plugin configuration.
+// Config is the middleware configuration from the Traefik Middleware CR.
 type Config struct {
-	RmapiURL              string `json:"rmapiURL,omitempty"`
-	SharedSecretEnv       string `json:"sharedSecretEnv,omitempty"`
-	RequestTimeoutSeconds int    `json:"requestTimeoutSeconds,omitempty"`
+	OcspURL string `json:"ocspURL,omitempty"`
+	// CABundlePath is the issuing CA, exposed to the guest via settings.mounts.
+	// The ABI hides the TLS chain and the CA is created at runtime, so it can
+	// be neither read from the connection nor inlined into a manifest.
+	CABundlePath string `json:"caBundlePath,omitempty"`
+	// DNSServer is the cluster resolver; the guest has no /etc/resolv.conf.
+	DNSServer             string `json:"dnsServer,omitempty"`
+	CertHeader            string `json:"certHeader,omitempty"`
 	CallsignHeader        string `json:"callsignHeader,omitempty"`
 	ValidityHeader        string `json:"validityHeader,omitempty"`
+	RequestTimeoutSeconds int    `json:"requestTimeoutSeconds,omitempty"`
 }
 
-// CreateConfig returns a Config populated with safe defaults.
-func CreateConfig() *Config {
-	return &Config{
-		RequestTimeoutSeconds: defaultRequestTimeoutSeconds,
-		CallsignHeader:        defaultCallsignHeader,
-		ValidityHeader:        defaultValidityHeader,
-	}
-}
-
-type checkRequest struct {
-	Callsign string `json:"callsign"`
-}
-
-type checkResponse struct {
-	Valid bool   `json:"valid"`
-	Error string `json:"error,omitempty"`
-}
-
-// Plugin is the Traefik middleware handler.
-type Plugin struct {
-	next           http.Handler
-	name           string
-	logPrefix      string
-	url            string
-	secret         string
-	requestTimeout time.Duration
+type settings struct {
+	ocspURL        string
+	caBundlePath   string
+	dnsServer      string
+	certHeader     string
 	callsignHeader string
 	validityHeader string
-	client         *http.Client
+	timeout        time.Duration
 }
 
-// New constructs the middleware.
-func New(_ context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	logPrefix := pluginLogPrefix(name)
-	if next == nil {
-		return nil, errors.New("next handler is nil")
+func (c Config) settings() settings {
+	return settings{
+		ocspURL:        c.OcspURL,
+		caBundlePath:   c.CABundlePath,
+		dnsServer:      c.DNSServer,
+		certHeader:     guest.OrDefault(c.CertHeader, clientcert.HeaderName),
+		callsignHeader: guest.OrDefault(c.CallsignHeader, defaultCallsignHeader),
+		validityHeader: guest.OrDefault(c.ValidityHeader, defaultValidityHeader),
+		timeout: time.Duration(guest.SecondsOr(c.RequestTimeoutSeconds,
+			defaultRequestTimeoutSeconds)) * time.Second,
 	}
-	if config == nil {
-		return nil, errors.New("config is nil")
-	}
-	if strings.TrimSpace(config.RmapiURL) == "" {
-		return nil, errors.New("rmapiURL is required")
-	}
-
-	requestTO := secondsOr(config.RequestTimeoutSeconds, defaultRequestTimeoutSeconds)
-	callsignHdr := orDefault(config.CallsignHeader, defaultCallsignHeader)
-	validityHdr := orDefault(config.ValidityHeader, defaultValidityHeader)
-
-	secret := ""
-	if envName := strings.TrimSpace(config.SharedSecretEnv); envName != "" {
-		secret = os.Getenv(envName)
-		if secret == "" {
-			log.Printf("WARN %s shared-secret env %q is empty; calling without auth header", logPrefix, envName)
-		}
-	}
-
-	p := &Plugin{
-		next:           next,
-		name:           name,
-		logPrefix:      logPrefix,
-		url:            config.RmapiURL,
-		secret:         secret,
-		requestTimeout: requestTO,
-		callsignHeader: callsignHdr,
-		validityHeader: validityHdr,
-		client:         &http.Client{Timeout: requestTO},
-	}
-
-	log.Printf("INFO %s initialized; rmapi=%s timeout=%s callsignHeader=%s validityHeader=%s",
-		logPrefix, p.url, p.requestTimeout, p.callsignHeader, p.validityHeader)
-	return p, nil
 }
 
-// ServeHTTP records the validity verdict in request headers and always
-// forwards. It never returns an error response (a panic is the only
-// exception). Downstream middleware acts on the verdict.
-func (p *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			log.Printf("ERROR %s panic: %v\n%s", p.logPrefix, recovered, string(debug.Stack()))
-			if rw != nil {
-				http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			}
-		}
-	}()
-
-	// Authoritatively reset all headers so a client cannot spoof them.
-	// Default reason is no_cert; each branch below refines it.
-	req.Header.Del(p.callsignHeader)
-	req.Header.Set(p.validityHeader, validityFalse)
-	req.Header.Set(reasonHeader, reasonNoCert)
-
-	cert, reason := verifiedClientLeaf(req)
-	if cert == nil {
-		log.Printf("INFO %s no verified client certificate (%s) for %s %s; verdict=false", p.logPrefix, reason, req.Method, req.URL.Path)
-		p.next.ServeHTTP(rw, req)
-		return
+func (c Config) validate() error {
+	if c.OcspURL == "" {
+		return errors.New("ocspURL is required")
 	}
-	callsign := strings.TrimSpace(cert.Subject.CommonName)
+	if c.CABundlePath == "" {
+		return errors.New("caBundlePath is required")
+	}
+	return nil
+}
+
+// Verdict is what gets written to the request headers.
+type Verdict struct {
+	Callsign string
+	Valid    bool
+	Reason   string
+}
+
+// HeaderValue is the value for the validity header.
+func (v Verdict) HeaderValue() string {
+	if v.Valid {
+		return validityTrue
+	}
+	return validityFalse
+}
+
+// issuerStore keeps the mounted CA bundle, re-reading it as it ages.
+type issuerStore struct {
+	path string
+
+	mu      sync.Mutex
+	certs   []*x509.Certificate
+	fetched time.Time
+}
+
+func newIssuerStore(path string) *issuerStore { return &issuerStore{path: path} }
+
+func (s *issuerStore) load() ([]*x509.Certificate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.certs != nil && time.Since(s.fetched) < caReloadInterval {
+		return s.certs, nil
+	}
+	raw, err := os.ReadFile(s.path)
+	if err != nil {
+		if s.certs != nil {
+			return s.certs, nil // keep serving the last good bundle
+		}
+		return nil, err
+	}
+	certs, err := parseBundle(raw)
+	if err != nil {
+		if s.certs != nil {
+			return s.certs, nil
+		}
+		return nil, err
+	}
+	s.certs, s.fetched = certs, time.Now()
+	return certs, nil
+}
+
+func parseBundle(raw []byte) ([]*x509.Certificate, error) {
+	var certs []*x509.Certificate
+	for {
+		var block *pem.Block
+		block, raw = pem.Decode(raw)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		certs = append(certs, cert)
+	}
+	if len(certs) == 0 {
+		return nil, errors.New("ca bundle contains no certificates")
+	}
+	return certs, nil
+}
+
+// issuerFor picks the bundle entry that actually signed leaf.
+func issuerFor(leaf *x509.Certificate, bundle []*x509.Certificate) (*x509.Certificate, error) {
+	for _, candidate := range bundle {
+		if !bytes.Equal(candidate.RawSubject, leaf.RawIssuer) {
+			continue
+		}
+		if err := leaf.CheckSignatureFrom(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return nil, errors.New("no issuer in the CA bundle signed this certificate")
+}
+
+// Evaluate produces the verdict for one request.
+func Evaluate(checker *ocspcheck.Checker, store *issuerStore, certHeader string) Verdict {
+	leaf, err := clientcert.Parse(certHeader)
+	if err != nil {
+		return Verdict{Valid: false, Reason: reasonNoCert}
+	}
+	callsign := clientcert.CommonName(leaf)
 	if callsign == "" {
-		log.Printf("INFO %s cert has empty CN for %s %s; verdict=false", p.logPrefix, req.Method, req.URL.Path)
-		p.next.ServeHTTP(rw, req)
-		return
+		return Verdict{Valid: false, Reason: reasonNoCert}
 	}
 
-	// Expose the authenticated callsign regardless of validity.
-	req.Header.Set(p.callsignHeader, callsign)
-
-	valid, err := p.check(callsign)
+	bundle, err := store.load()
 	if err != nil {
-		req.Header.Set(reasonHeader, reasonError)
-		log.Printf("ERROR %s validity check failed for callsign=%q: %v; verdict=false", p.logPrefix, callsign, err)
-		p.next.ServeHTTP(rw, req)
-		return
+		return Verdict{Callsign: callsign, Valid: false, Reason: reasonError}
 	}
-	if valid {
-		req.Header.Set(p.validityHeader, validityTrue)
-		req.Header.Set(reasonHeader, reasonOK)
-	} else {
-		req.Header.Set(reasonHeader, reasonInvalid)
-		log.Printf("INFO %s callsign=%q is not valid; verdict=false", p.logPrefix, callsign)
-	}
-
-	p.next.ServeHTTP(rw, req)
-}
-
-func (p *Plugin) check(callsign string) (bool, error) {
-	body, err := json.Marshal(checkRequest{Callsign: callsign})
+	issuer, err := issuerFor(leaf, bundle)
 	if err != nil {
-		return false, fmt.Errorf("marshal request: %w", err)
+		return Verdict{Callsign: callsign, Valid: false, Reason: reasonError}
 	}
-	req, err := http.NewRequest(http.MethodPost, p.url, bytes.NewReader(body))
+
+	resp, err := checker.Check(leaf, issuer)
 	if err != nil {
-		return false, fmt.Errorf("build request: %w", err)
+		return Verdict{Callsign: callsign, Valid: false, Reason: reasonError}
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if p.secret != "" {
-		req.Header.Set(secretHeader, p.secret)
+	if resp.Status == ocsp.Good {
+		return Verdict{Callsign: callsign, Valid: true, Reason: reasonOK}
 	}
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("http call: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return false, fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
-	var out checkResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return false, fmt.Errorf("decode response: %w", err)
-	}
-	if out.Error != "" {
-		return false, fmt.Errorf("server error: %s", out.Error)
-	}
-	return out.Valid, nil
+	// Revoked and Unknown both deny.
+	return Verdict{Callsign: callsign, Valid: false, Reason: reasonInvalid}
 }
 
-func verifiedClientLeaf(req *http.Request) (*x509.Certificate, string) {
-	if req == nil || req.TLS == nil {
-		return nil, "request has no TLS state"
-	}
-	if len(req.TLS.VerifiedChains) == 0 {
-		if len(req.TLS.PeerCertificates) > 0 {
-			return nil, "peer certificate present but not verified"
-		}
-		return nil, "no peer certificate"
-	}
-	for _, chain := range req.TLS.VerifiedChains {
-		if len(chain) > 0 && chain[0] != nil {
-			return chain[0], ""
-		}
-	}
-	return nil, "verified chains present but leaf certificate missing"
-}
-
-func secondsOr(value int, fallback int) time.Duration {
-	if value <= 0 {
-		return time.Duration(fallback) * time.Second
-	}
-	return time.Duration(value) * time.Second
-}
-
-func orDefault(value string, fallback string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
-func pluginLogPrefix(name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = "unnamed"
-	}
-	return fmt.Sprintf("callsign-validity[%s]", name)
-}
+func main() {}

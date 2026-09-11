@@ -1,7 +1,9 @@
 displayName: Legacy mTLS Headers
 type: middleware
-import: github.com/pvarki/traefik-legacy-mtls-headers
-summary: Set legacy X-ClientCert-* headers from a verified TLS client certificate.
+runtime: wasm
+summary: Re-publish the client certificate as the X-ClientCert-* headers older product backends expect. Requires passTLSClientCert upstream.
 testData:
+  certHeader: X-Forwarded-Tls-Client-Cert
   clientCertDNHeader: X-ClientCert-DN
   clientCertSerialHeader: X-ClientCert-Serial
+  clientCertFingerprintHeader: X-ClientCert-Fingerprint

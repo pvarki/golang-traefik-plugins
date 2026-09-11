@@ -1,0 +1,10 @@
+dist/
+.prettier_cache
+
+# Binaries dropped in the repo root by `go build ./...`
+/callsign-validity
+/callsign-redirect
+/legacy-mtls-headers
+/request-id
+/wasmverify
+vendor/
