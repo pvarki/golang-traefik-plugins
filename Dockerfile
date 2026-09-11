@@ -20,7 +20,7 @@ RUN set -eu; \
       cp "${dir}.traefik.yml" "/out/${name}/"; \
     done
 
-FROM busybox:${BUSYBOX_VERSION}
+FROM busybox:${BUSYBOX_VERSION} AS production
 LABEL org.opencontainers.image.version="0.1.0+260911" \
       org.opencontainers.image.title="golang-traefik-plugins" \
       org.opencontainers.image.source="https://github.com/pvarki/golang-traefik-plugins"
