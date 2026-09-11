@@ -1,9 +1,12 @@
 displayName: Callsign Validity
 type: middleware
-import: github.com/pvarki/traefik-callsign-validity
-summary: Authorize mTLS requests by checking the client cert CN (callsign) against the rasenmaeher-api validity endpoint over HTTP. Fails closed.
+runtime: wasm
+summary: Authorize mTLS requests by asking the rasenmaeher-api OCSP responder whether the client certificate is still good. Revoked and unknown both deny.
 testData:
-  rmapiURL: http://rmapi.opendefence-system.svc.cluster.local:8000/api/v1/internal/callsign-validity/check
-  sharedSecretEnv: RM_CALLSIGN_VALIDITY_SECRET
-  requestTimeoutSeconds: 3
+  ocspURL: http://rmapi.opendefence-system.svc.cluster.local:8000/api/v1/ocsp
+  caBundlePath: /ca/ca.pem
+  dnsServer: 10.43.0.10:53
+  certHeader: X-Forwarded-Tls-Client-Cert
   callsignHeader: Callsign
+  validityHeader: Callsign-Valid
+  requestTimeoutSeconds: 3

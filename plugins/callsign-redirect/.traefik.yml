@@ -1,7 +1,7 @@
 displayName: Callsign Redirect
 type: middleware
-import: github.com/pvarki/traefik-callsign-redirect
-summary: Acts on the callsign validity verdict and reason headers. Forwards when valid; on an "mtls." host redirects to the base-domain /error page with a reason-derived code (no_cert -> mtls_fail, invalid -> unauthorized); on any other host returns an empty 403. A configured redirectURL overrides as an escape hatch.
+runtime: wasm
+summary: Act on the callsign validity verdict, redirecting to the error page or denying with 403. Never forwards an invalid verdict.
 testData:
   validityHeader: Callsign-Valid
   redirectStatus: 302

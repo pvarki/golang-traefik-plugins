@@ -1,0 +1,7 @@
+dist/
+.git/
+.github/
+*.md
+.pre-commit-config.yaml
+.prettier_cache
+vendor/

@@ -1,47 +1,43 @@
-// Package traefik_callsign_redirect is the single place that decides what to
-// do with the callsign validity verdict produced upstream by the
-// callsign-validity middleware.
+// Package main is the callsign-redirect Traefik middleware, compiled to Wasm.
 //
-// It reads the validity header (default "Callsign-Valid"); "true" forwards
-// unchanged. Otherwise it reads the reason header ("Callsign-Valid-Reason") to
-// pick an /error code (invalid -> unauthorized, no_cert -> mtls_fail, error ->
-// none) and acts in this order of precedence:
-//  1. the configured redirectURL, if set → redirect there verbatim; otherwise
-//  2. the base domain (the host with a leading "mtls." stripped) at /error with
-//     the reason code, e.g. mtls.example.org/foo → example.org/error?code=…
+// It is the single place that decides what to do with the validity verdict
+// produced upstream by callsign-validity, so all redirect and deny policy
+// lives in one file.
 //
-// If neither yields a target (no redirectURL and the host has no "mtls."
-// prefix or does not match baseDomain), the request is denied with 403 rather
-// than silently forwarded, so an invalid verdict never reaches a protected
-// backend.
-package traefik_callsign_redirect
+// "true" in the validity header forwards unchanged. Otherwise the reason
+// header picks an /error code and, in order of precedence:
+//  1. the configured redirectURL, if set, is used verbatim; otherwise
+//  2. the base domain (the host with a leading "mtls." stripped) at /error
+//     with the reason code, e.g. mtls.example.org/foo -> example.org/error?code=...
+//
+// If neither yields a target the request is denied with 403 rather than
+// silently forwarded, so an invalid verdict never reaches a protected backend.
+package main
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"log"
 	"net"
-	"net/http"
-	"runtime/debug"
 	"strings"
+
+	"github.com/pvarki/golang-traefik-plugins/internal/guest"
 )
 
 const (
 	defaultValidityHeader = "Callsign-Valid"
-	defaultRedirectStatus = http.StatusFound
+	defaultRedirectStatus = 302
 	validityTrue          = "true"
 
 	reasonHeader = "Callsign-Valid-Reason"
 	errorPath    = "/error"
 
-	// Reason values (set by callsign-validity) mapped to UI /error codes.
+	// Reason values set by callsign-validity, mapped to UI /error codes.
 	reasonInvalid    = "invalid"
 	reasonError      = "error"
 	codeUnauthorized = "unauthorized"
 	codeMTLSFail     = "mtls_fail"
 )
 
+// Config is the middleware configuration from the Traefik Middleware CR.
 type Config struct {
 	ValidityHeader string `json:"validityHeader,omitempty"`
 	RedirectURL    string `json:"redirectURL,omitempty"`
@@ -49,114 +45,69 @@ type Config struct {
 	BaseDomain     string `json:"baseDomain,omitempty"`
 }
 
-func CreateConfig() *Config {
-	return &Config{
-		ValidityHeader: defaultValidityHeader,
-		RedirectStatus: defaultRedirectStatus,
-	}
-}
-
-type Plugin struct {
-	next           http.Handler
-	name           string
-	logPrefix      string
+type settings struct {
 	validityHeader string
 	redirectURL    string
-	redirectStatus int
+	redirectStatus uint32
 	baseDomain     string
 }
 
-func New(_ context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	logPrefix := pluginLogPrefix(name)
-	if next == nil {
-		return nil, errors.New("next handler is nil")
-	}
-	if config == nil {
-		config = CreateConfig()
-	}
-
-	validityHdr := strings.TrimSpace(config.ValidityHeader)
-	if validityHdr == "" {
-		validityHdr = defaultValidityHeader
-	}
-	status := config.RedirectStatus
-	if status == 0 {
+func (c Config) settings() settings {
+	status := c.RedirectStatus
+	if status <= 0 {
 		status = defaultRedirectStatus
 	}
-
-	p := &Plugin{
-		next:           next,
-		name:           name,
-		logPrefix:      logPrefix,
-		validityHeader: validityHdr,
-		redirectURL:    strings.TrimSpace(config.RedirectURL),
-		redirectStatus: status,
-		baseDomain:     strings.ToLower(strings.TrimSpace(config.BaseDomain)),
+	return settings{
+		validityHeader: guest.OrDefault(c.ValidityHeader, defaultValidityHeader),
+		redirectURL:    strings.TrimSpace(c.RedirectURL),
+		redirectStatus: uint32(status), //nolint:gosec // bounded by the check above
+		baseDomain:     strings.TrimSpace(c.BaseDomain),
 	}
-
-	log.Printf("INFO %s initialized; validityHeader=%s redirectURL=%q baseDomain=%q status=%d",
-		logPrefix, p.validityHeader, p.redirectURL, p.baseDomain, p.redirectStatus)
-	return p, nil
 }
 
-func (p *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			log.Printf("ERROR %s panic: %v\n%s", p.logPrefix, recovered, string(debug.Stack()))
-			if rw != nil {
-				http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			}
-		}
-	}()
+type action struct {
+	Forward  bool
+	Location string // redirect target; empty means deny with 403
+}
 
-	if strings.EqualFold(strings.TrimSpace(req.Header.Get(p.validityHeader)), validityTrue) {
-		p.next.ServeHTTP(rw, req)
-		return
+// decide maps the upstream verdict onto an action.
+func decide(set settings, valid, reason, host, proto string) action {
+	if strings.EqualFold(strings.TrimSpace(valid), validityTrue) {
+		return action{Forward: true}
 	}
 
-	// Map the failure reason to a UI /error code.
 	code := codeMTLSFail
-	switch strings.ToLower(strings.TrimSpace(req.Header.Get(reasonHeader))) {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
 	case reasonInvalid:
 		code = codeUnauthorized
 	case reasonError:
 		code = "" // generic error page
 	}
 
-	dest := p.redirectURL
+	dest := set.redirectURL
 	if dest == "" {
 		path := errorPath
 		if code != "" {
 			path += "?code=" + code
 		}
-		if computed, ok := redirectURLWithoutMTLSSubdomain(req, path, p.baseDomain); ok {
+		if computed, ok := redirectURLWithoutMTLSSubdomain(host, proto, path, set.baseDomain); ok {
 			dest = computed
 		}
 	}
-	if dest == "" {
-		log.Printf("INFO %s invalid verdict and no redirect target for %s %s; denying with empty 403", p.logPrefix, req.Method, req.URL.Path)
-		rw.WriteHeader(http.StatusForbidden)
-		return
-	}
-
-	log.Printf("INFO %s invalid verdict; redirecting %s %s -> %s", p.logPrefix, req.Method, req.URL.Path, dest)
-	http.Redirect(rw, req, dest, p.redirectStatus)
+	return action{Location: dest}
 }
 
-func redirectURLWithoutMTLSSubdomain(req *http.Request, path, baseDomain string) (string, bool) {
-	if req == nil {
-		return "", false
-	}
-	host := strings.TrimSpace(req.Host)
+// redirectURLWithoutMTLSSubdomain rewrites mtls.<domain> to <domain> at path.
+// The scheme comes from X-Forwarded-Proto, since the ABI hides req.TLS.
+func redirectURLWithoutMTLSSubdomain(host, proto, path, baseDomain string) (string, bool) {
+	host = strings.TrimSpace(host)
 	if host == "" {
 		return "", false
 	}
 
-	hostWithoutPort := host
-	port := ""
+	hostWithoutPort, port := host, ""
 	if parsedHost, parsedPort, err := net.SplitHostPort(host); err == nil {
-		hostWithoutPort = parsedHost
-		port = parsedPort
+		hostWithoutPort, port = parsedHost, parsedPort
 	}
 
 	if !strings.HasPrefix(strings.ToLower(hostWithoutPort), "mtls.") {
@@ -174,17 +125,10 @@ func redirectURLWithoutMTLSSubdomain(req *http.Request, path, baseDomain string)
 	}
 
 	scheme := "https"
-	if req.TLS == nil {
+	if strings.EqualFold(strings.TrimSpace(proto), "http") {
 		scheme = "http"
 	}
-
 	return fmt.Sprintf("%s://%s%s", scheme, targetHost, path), true
 }
 
-func pluginLogPrefix(name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = "unnamed"
-	}
-	return fmt.Sprintf("callsign-redirect[%s]", name)
-}
+func main() {}
