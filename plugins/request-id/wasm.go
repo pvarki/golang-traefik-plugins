@@ -9,6 +9,7 @@ import (
 
 	"github.com/http-wasm/http-wasm-guest-tinygo/handler"
 	"github.com/http-wasm/http-wasm-guest-tinygo/handler/api"
+	"github.com/pvarki/golang-traefik-plugins/internal/version"
 )
 
 var headerName string
@@ -23,6 +24,7 @@ func init() {
 	}
 	headerName = cfg.headerName()
 	handler.HandleRequestFn = handleRequest
+	handler.Host.Log(api.LogLevelInfo, "request-id: loaded version "+version.Version)
 }
 
 func handleRequest(req api.Request, _ api.Response) (bool, uint32) {

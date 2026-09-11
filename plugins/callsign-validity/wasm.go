@@ -13,6 +13,7 @@ import (
 	"github.com/http-wasm/http-wasm-guest-tinygo/handler"
 	"github.com/http-wasm/http-wasm-guest-tinygo/handler/api"
 	"github.com/pvarki/golang-traefik-plugins/internal/ocspcheck"
+	"github.com/pvarki/golang-traefik-plugins/internal/version"
 	_ "github.com/stealthrocket/net/http"
 	"github.com/stealthrocket/net/wasip1"
 )
@@ -51,6 +52,7 @@ func init() {
 		os.Exit(1)
 	}
 	handler.HandleRequestFn = handleRequest
+	handler.Host.Log(api.LogLevelInfo, "callsign-validity: loaded version "+version.Version)
 }
 
 func handleRequest(req api.Request, _ api.Response) (bool, uint32) {
