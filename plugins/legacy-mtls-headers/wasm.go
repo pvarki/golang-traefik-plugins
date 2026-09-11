@@ -9,6 +9,7 @@ import (
 
 	"github.com/http-wasm/http-wasm-guest-tinygo/handler"
 	"github.com/http-wasm/http-wasm-guest-tinygo/handler/api"
+	"github.com/pvarki/golang-traefik-plugins/internal/version"
 )
 
 var hdrs headers
@@ -23,6 +24,7 @@ func init() {
 	}
 	hdrs = cfg.headers()
 	handler.HandleRequestFn = handleRequest
+	handler.Host.Log(api.LogLevelInfo, "legacy-mtls-headers: loaded version "+version.Version)
 }
 
 func handleRequest(req api.Request, _ api.Response) (bool, uint32) {
