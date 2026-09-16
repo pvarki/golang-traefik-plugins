@@ -1,23 +1,32 @@
 # Builds every plugin as a wasm module and ships them in a minimal image.
 # The image is consumed by an initContainer that copies the modules into a
 # volume Traefik mounts as a localPlugin.
-ARG GO_VERSION=1.25
+#
+# TinyGo produces far smaller modules with no Go scheduler or GC, and Traefik
+# holds one instance per concurrent request, so the difference is resident
+# memory rather than disk. None of these plugins makes an outbound call, which
+# is the one thing TinyGo cannot do on wasip1: revocation is answered by
+# Traefik's forwardAuth middleware, not from inside a guest.
+#
+# -buildmode=c-shared is required: without it the module is a command exporting
+# _start, Traefik runs main, main returns and the module exits mid-request.
+ARG TINYGO_VERSION=0.40.0
 ARG BUSYBOX_VERSION=1.37.0-musl
 
-FROM golang:${GO_VERSION}-alpine AS build
+FROM --platform=${BUILDPLATFORM} tinygo/tinygo:${TINYGO_VERSION} AS build
+# The image runs as a non-root user that cannot write outside its home.
+USER root
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOTOOLCHAIN=local go mod download
 COPY . .
 RUN set -eu; \
     mkdir -p /out; \
-    for dir in plugins/*/; do \
-      name="$(basename "$dir")"; \
+    for name in request-id callsign-redirect legacy-mtls-headers; do \
       mkdir -p "/out/${name}"; \
-      GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build \
-        -buildmode=c-shared -trimpath \
+      GOTOOLCHAIN=local tinygo build -target=wasip1 -buildmode=c-shared \
         -o "/out/${name}/plugin.wasm" "./plugins/${name}"; \
-      cp "${dir}.traefik.yml" "/out/${name}/"; \
+      cp "plugins/${name}/.traefik.yml" "/out/${name}/"; \
     done
 
 FROM busybox:${BUSYBOX_VERSION} AS production
