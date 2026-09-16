@@ -1,0 +1,89 @@
+{
+  "config": {
+    "clientCertDNHeader": "X-ClientCert-DN",
+    "clientCertSerialHeader": "X-ClientCert-Serial",
+    "clientCertFingerprintHeader": "X-SSL-Client-Fingerprint"
+  },
+  "cases": [
+    {
+      "name": "a verified chain publishes all three headers",
+      "tls": "verified",
+      "expect": {
+        "forwarded": true,
+        "requestHeaders": {
+          "X-ClientCert-DN": "CN=ALPHA01,O=OpenDefence",
+          "X-ClientCert-Serial": "4242DEADBEEF",
+          "X-SSL-Client-Fingerprint": "7d844ab1606ab6da4f759faf5ebb6a57809dfba3"
+        }
+      }
+    },
+    {
+      "name": "an unverified peer certificate is rejected",
+      "tls": "peer",
+      "expect": {
+        "forwarded": true,
+        "requestHeadersAbsent": [
+          "X-ClientCert-DN",
+          "X-ClientCert-Serial",
+          "X-SSL-Client-Fingerprint"
+        ]
+      }
+    },
+    {
+      "name": "no TLS state clears the headers",
+      "tls": "none",
+      "expect": {
+        "forwarded": true,
+        "requestHeadersAbsent": [
+          "X-ClientCert-DN",
+          "X-ClientCert-Serial",
+          "X-SSL-Client-Fingerprint"
+        ]
+      }
+    },
+    {
+      "name": "client supplied headers are cleared when there is no certificate",
+      "tls": "empty",
+      "requestHeaders": {
+        "X-ClientCert-DN": "CN=spoofed",
+        "X-ClientCert-Serial": "DEADBEEF",
+        "X-SSL-Client-Fingerprint": "0000000000000000000000000000000000000000"
+      },
+      "expect": {
+        "forwarded": true,
+        "requestHeadersAbsent": [
+          "X-ClientCert-DN",
+          "X-ClientCert-Serial",
+          "X-SSL-Client-Fingerprint"
+        ]
+      }
+    },
+    {
+      "name": "a verified chain overwrites client supplied headers",
+      "tls": "verified",
+      "requestHeaders": { "X-ClientCert-DN": "CN=spoofed" },
+      "expect": {
+        "forwarded": true,
+        "requestHeaders": { "X-ClientCert-DN": "CN=ALPHA01,O=OpenDefence" }
+      }
+    },
+    {
+      "name": "custom header names are honoured",
+      "config": {
+        "clientCertDNHeader": "X-DN",
+        "clientCertSerialHeader": "X-Serial",
+        "clientCertFingerprintHeader": "X-FP"
+      },
+      "tls": "verified",
+      "expect": {
+        "forwarded": true,
+        "requestHeaders": {
+          "X-DN": "CN=ALPHA01,O=OpenDefence",
+          "X-Serial": "4242DEADBEEF",
+          "X-FP": "7d844ab1606ab6da4f759faf5ebb6a57809dfba3"
+        },
+        "requestHeadersAbsent": ["X-ClientCert-DN"]
+      }
+    }
+  ]
+}

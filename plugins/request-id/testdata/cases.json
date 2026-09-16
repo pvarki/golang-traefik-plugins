@@ -1,0 +1,37 @@
+{
+  "config": { "headerName": "X-Request-ID" },
+  "cases": [
+    {
+      "name": "sets a fresh id",
+      "expect": {
+        "forwarded": true,
+        "requestHeaderPatterns": { "X-Request-ID": "^[0-9a-f]{32}$" }
+      }
+    },
+    {
+      "name": "overwrites a client supplied value",
+      "requestHeaders": { "X-Request-ID": "spoofed-by-the-client" },
+      "expect": {
+        "forwarded": true,
+        "requestHeaderPatterns": { "X-Request-ID": "^[0-9a-f]{32}$" }
+      }
+    },
+    {
+      "name": "honours a custom header name",
+      "config": { "headerName": "X-Trace" },
+      "expect": {
+        "forwarded": true,
+        "requestHeaderPatterns": { "X-Trace": "^[0-9a-f]{32}$" },
+        "requestHeadersAbsent": ["X-Request-ID"]
+      }
+    },
+    {
+      "name": "blank header name falls back to the default",
+      "config": { "headerName": "   " },
+      "expect": {
+        "forwarded": true,
+        "requestHeaderPatterns": { "X-Request-ID": "^[0-9a-f]{32}$" }
+      }
+    }
+  ]
+}

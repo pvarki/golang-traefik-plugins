@@ -6,5 +6,5 @@ dist/
 /callsign-redirect
 /legacy-mtls-headers
 /request-id
-/wasmverify
 vendor/
+gotest*.xml

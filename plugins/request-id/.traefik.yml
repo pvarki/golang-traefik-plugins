@@ -1,6 +1,6 @@
 displayName: Request ID
 type: middleware
-runtime: wasm
+import: github.com/pvarki/golang-traefik-plugins/plugins/request-id
 summary: Stamp every request with a fresh random X-Request-ID, replacing any client-supplied value.
 testData:
   headerName: X-Request-ID

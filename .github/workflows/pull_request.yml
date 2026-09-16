@@ -31,8 +31,32 @@ jobs:
         run: |
           prek run --all-files
 
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pvarki/config-ci-library/.github/actions/setup-golang@main
+      - name: Install go-junit-report
+        run: go install github.com/jstemmer/go-junit-report/v2@v2.1.0
+      - name: Run tests
+        run: |
+          set -o pipefail
+          go test -v ./... 2>&1 | go-junit-report -set-exit-code > gotest.xml
+      - name: Publish test report
+        uses: mikepenz/action-junit-report@v6
+        if: success() || failure()
+        with:
+          report_paths: "**/gotest*.xml"
+          detailed_summary: true
+          check_name: "Go test report"
+
   publish:
-    needs: [version-check, pre-commit]
+    needs: [version-check, pre-commit, test]
     runs-on: arc-runner-set
     permissions:
       contents: read
