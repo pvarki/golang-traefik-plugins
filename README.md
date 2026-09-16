@@ -1,33 +1,7 @@
 # golang-traefik-plugins
 
-Traefik middleware plugins for the OpenDefence platform, compiled to WebAssembly.
-
-## Why wasm
-
-These plugins previously ran as interpreted Go source under Yaegi, shipped in a
-ConfigMap. Two problems ended that:
-
-- Yaegi evaluated a `bool(x)` conversion in condition position as always-true,
-  so a **revoked certificate was admitted**. Compiled tests could not see it,
-  because production ran the interpreter and the tests ran the compiler.
-- Yaegi needs every dependency shipped as source, which the 1 MiB ConfigMap
-  limit ruled out, so anything non-trivial had to be hand-written.
-
-Compiling to `wasip1` fixes both: `go test` exercises the same source that
-produces the artifact, and dependencies resolve normally from `go.mod`.
-
-## Why TinyGo
-
-Traefik instantiates one guest per concurrent request and does not free them
-(traefik#11119), so module size is resident memory, not disk. TinyGo emits no
-Go scheduler, GC or netpoller and cuts each module by 4-5x.
-
-The cost is that TinyGo cannot open a socket on `wasip1`: WASI preview 1 has no
-outbound networking, and TinyGo's `net` package has no driver for the WasmEdge
-socket extension that Traefik exposes. None of these plugins makes an outbound
-call, so it does not bite. Revocation, which does need one, is answered by
-Traefik's built-in `forwardAuth` middleware calling rasenmaeher-api directly —
-see the `callsign-validity` Middleware in the platform repo.
+Traefik middleware plugins for the OpenDefence platform, compiled to WebAssembly
+with TinyGo.
 
 ## Plugins
 
@@ -38,7 +12,22 @@ see the `callsign-validity` Middleware in the platform repo.
 | `request-id`          | Stamps every request with a fresh random `X-Request-ID`.                                                                     |
 
 The `Callsign`, `Callsign-Valid` and `Callsign-Valid-Reason` headers that
-`callsign-redirect` consumes are set by `forwardAuth`, not by a plugin here.
+`callsign-redirect` consumes come from the `callsign-validity` `forwardAuth`
+middleware, not from a plugin here.
+
+## Constraints
+
+Traefik holds one guest instance per concurrent request, so module size is
+resident memory rather than disk. TinyGo emits no Go scheduler, GC or netpoller
+and keeps the modules small.
+
+A TinyGo guest cannot open a socket: WASI preview 1 has no outbound networking
+and TinyGo's `net` package has no driver for the WasmEdge socket extension.
+Plugins here must not make outbound calls.
+
+`-buildmode=c-shared` is required. Without it the module is a command exporting
+`_start`, so Traefik runs `main` and the module exits mid-request. `task verify`
+is the gate for this.
 
 ## Client certificates
 
@@ -61,8 +50,6 @@ task image     # local container image
 ```
 
 `task build` runs TinyGo in a container, so no local TinyGo install is needed.
-`task verify` is the gate that catches a missing `-buildmode=c-shared`, which
-produces a module Traefik loads and then exits mid-request.
 
 ## Deployment
 

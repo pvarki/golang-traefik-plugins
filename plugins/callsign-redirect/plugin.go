@@ -19,7 +19,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/pvarki/golang-traefik-plugins/internal/guest"
+	"github.com/pvarki/golang-traefik-plugins/internal/strutil"
 )
 
 const (
@@ -58,7 +58,7 @@ func (c Config) settings() settings {
 		status = defaultRedirectStatus
 	}
 	return settings{
-		validityHeader: guest.OrDefault(c.ValidityHeader, defaultValidityHeader),
+		validityHeader: strutil.OrDefault(c.ValidityHeader, defaultValidityHeader),
 		redirectURL:    strings.TrimSpace(c.RedirectURL),
 		redirectStatus: uint32(status), //nolint:gosec // bounded by the check above
 		baseDomain:     strings.TrimSpace(c.BaseDomain),

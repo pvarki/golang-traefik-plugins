@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/pvarki/golang-traefik-plugins/internal/clientcert"
-	"github.com/pvarki/golang-traefik-plugins/internal/guest"
+	"github.com/pvarki/golang-traefik-plugins/internal/strutil"
 )
 
 const (
@@ -35,10 +35,10 @@ type headers struct {
 
 func (c Config) headers() headers {
 	return headers{
-		dn:          guest.OrDefault(c.ClientCertDNHeader, defaultClientCertDNHeader),
-		serial:      guest.OrDefault(c.ClientCertSerialHeader, defaultClientCertSerialHeader),
-		fingerprint: guest.OrDefault(c.ClientCertFingerprintHeader, defaultClientCertFingerprintHeader),
-		cert:        guest.OrDefault(c.CertHeader, clientcert.HeaderName),
+		dn:          strutil.OrDefault(c.ClientCertDNHeader, defaultClientCertDNHeader),
+		serial:      strutil.OrDefault(c.ClientCertSerialHeader, defaultClientCertSerialHeader),
+		fingerprint: strutil.OrDefault(c.ClientCertFingerprintHeader, defaultClientCertFingerprintHeader),
+		cert:        strutil.OrDefault(c.CertHeader, clientcert.HeaderName),
 	}
 }
 
