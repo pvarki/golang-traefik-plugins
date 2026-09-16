@@ -48,7 +48,7 @@ func handleRequest(req api.Request, resp api.Response) (bool, uint32) {
 		resp.SetStatusCode(forbidden)
 		return false, 0
 	}
-	resp.SetStatusCode(set.redirectStatus)
 	resp.Headers().Set("Location", decision.Location)
+	resp.SetStatusCode(set.redirectStatus)
 	return false, 0
 }
