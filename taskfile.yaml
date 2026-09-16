@@ -2,6 +2,7 @@ version: "3"
 
 vars:
   DIST: dist
+  TINYGO_VERSION: 0.40.0
   IMAGE: ghcr.io/pvarki/golang-traefik-plugins
   TAG:
     sh: git describe --tags --always --dirty 2>/dev/null || echo dev
@@ -26,9 +27,11 @@ tasks:
       - for: { var: PLUGINS }
         cmd: |
           mkdir -p "{{.DIST}}/{{.ITEM}}"
-          GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build \
-            -buildmode=c-shared -trimpath \
-            -o "{{.DIST}}/{{.ITEM}}/plugin.wasm" "./plugins/{{.ITEM}}"
+          docker run --rm -e GOTOOLCHAIN=local -e GOFLAGS=-mod=mod \
+            -v "$PWD":/src -v /tmp/tgcache:/home/tinygo/.cache -w /src \
+            tinygo/tinygo:{{.TINYGO_VERSION}} \
+            tinygo build -target=wasip1 -buildmode=c-shared \
+              -o "/src/{{.DIST}}/{{.ITEM}}/plugin.wasm" "./plugins/{{.ITEM}}"
           cp "plugins/{{.ITEM}}/.traefik.yml" "{{.DIST}}/{{.ITEM}}/"
 
   verify:
