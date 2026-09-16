@@ -1,6 +1,6 @@
 displayName: Callsign Redirect
 type: middleware
-runtime: wasm
+import: github.com/pvarki/golang-traefik-plugins/plugins/callsign-redirect
 summary: Act on the callsign validity verdict, redirecting to the error page or denying with 403. Never forwards an invalid verdict.
 testData:
   validityHeader: Callsign-Valid

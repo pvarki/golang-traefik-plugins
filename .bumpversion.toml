@@ -25,11 +25,6 @@ allow_shell_hooks = true
 calver_format = "{0Y}{0M}{0D}"
 
 [[tool.bumpversion.files]]
-filename = "internal/version/version.go"
-search = 'const Version = "{current_version}"'
-replace = 'const Version = "{new_version}"'
-
-[[tool.bumpversion.files]]
 filename = "Dockerfile"
 search = 'org.opencontainers.image.version="{current_version}"'
 replace = 'org.opencontainers.image.version="{new_version}"'

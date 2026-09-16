@@ -1,9 +1,8 @@
 displayName: Legacy mTLS Headers
 type: middleware
-runtime: wasm
-summary: Re-publish the client certificate as the X-ClientCert-* headers older product backends expect. Requires passTLSClientCert upstream.
+import: github.com/pvarki/golang-traefik-plugins/plugins/legacy-mtls-headers
+summary: Re-publish the verified client certificate as the X-ClientCert-* headers older product backends expect.
 testData:
-  certHeader: X-Forwarded-Tls-Client-Cert
   clientCertDNHeader: X-ClientCert-DN
   clientCertSerialHeader: X-ClientCert-Serial
-  clientCertFingerprintHeader: X-ClientCert-Fingerprint
+  clientCertFingerprintHeader: X-SSL-Client-Fingerprint

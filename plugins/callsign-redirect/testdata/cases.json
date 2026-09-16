@@ -1,0 +1,144 @@
+{
+  "config": {
+    "validityHeader": "Callsign-Valid",
+    "redirectStatus": 302,
+    "baseDomain": "example.org"
+  },
+  "cases": [
+    {
+      "name": "valid verdict forwards",
+      "host": "mtls.example.org",
+      "tls": "empty",
+      "requestHeaders": { "Callsign-Valid": "true" },
+      "expect": { "forwarded": true }
+    },
+    {
+      "name": "valid verdict is case insensitive and trimmed",
+      "host": "mtls.example.org",
+      "tls": "empty",
+      "requestHeaders": { "Callsign-Valid": "  TRUE  " },
+      "expect": { "forwarded": true }
+    },
+    {
+      "name": "invalid redirects with the unauthorized code",
+      "host": "mtls.example.org",
+      "tls": "empty",
+      "requestHeaders": {
+        "Callsign-Valid": "false",
+        "Callsign-Valid-Reason": "invalid"
+      },
+      "expect": {
+        "forwarded": false,
+        "status": 302,
+        "responseHeaders": {
+          "Location": "https://example.org/error?code=unauthorized"
+        }
+      }
+    },
+    {
+      "name": "no_cert redirects with the mtls_fail code",
+      "host": "mtls.example.org",
+      "tls": "empty",
+      "requestHeaders": {
+        "Callsign-Valid": "false",
+        "Callsign-Valid-Reason": "no_cert"
+      },
+      "expect": {
+        "forwarded": false,
+        "status": 302,
+        "responseHeaders": {
+          "Location": "https://example.org/error?code=mtls_fail"
+        }
+      }
+    },
+    {
+      "name": "error reason redirects to the generic error page",
+      "host": "mtls.example.org",
+      "tls": "empty",
+      "requestHeaders": {
+        "Callsign-Valid": "false",
+        "Callsign-Valid-Reason": "error"
+      },
+      "expect": {
+        "forwarded": false,
+        "status": 302,
+        "responseHeaders": { "Location": "https://example.org/error" }
+      }
+    },
+    {
+      "name": "missing reason falls back to mtls_fail",
+      "host": "mtls.example.org",
+      "tls": "empty",
+      "requestHeaders": { "Callsign-Valid": "false" },
+      "expect": {
+        "forwarded": false,
+        "status": 302,
+        "responseHeaders": {
+          "Location": "https://example.org/error?code=mtls_fail"
+        }
+      }
+    },
+    {
+      "name": "the port is preserved in the redirect",
+      "host": "mtls.example.org:8443",
+      "tls": "empty",
+      "requestHeaders": {
+        "Callsign-Valid": "false",
+        "Callsign-Valid-Reason": "invalid"
+      },
+      "expect": {
+        "forwarded": false,
+        "status": 302,
+        "responseHeaders": {
+          "Location": "https://example.org:8443/error?code=unauthorized"
+        }
+      }
+    },
+    {
+      "name": "a plaintext connection redirects to http",
+      "host": "mtls.example.org",
+      "tls": "none",
+      "requestHeaders": {
+        "Callsign-Valid": "false",
+        "Callsign-Valid-Reason": "invalid"
+      },
+      "expect": {
+        "forwarded": false,
+        "status": 302,
+        "responseHeaders": {
+          "Location": "http://example.org/error?code=unauthorized"
+        }
+      }
+    },
+    {
+      "name": "a non-mtls host denies with an empty 403",
+      "host": "api.example.org",
+      "tls": "empty",
+      "requestHeaders": {
+        "Callsign-Valid": "false",
+        "Callsign-Valid-Reason": "invalid"
+      },
+      "expect": { "forwarded": false, "status": 403 }
+    },
+    {
+      "name": "a configured redirectURL overrides the derived one",
+      "config": {
+        "validityHeader": "Callsign-Valid",
+        "redirectStatus": 302,
+        "baseDomain": "example.org",
+        "redirectURL": "https://elsewhere.example/denied"
+      },
+      "host": "mtls.example.org",
+      "tls": "empty",
+      "requestHeaders": {
+        "Callsign-Valid": "false",
+        "Callsign-Valid-Reason": "invalid"
+      },
+      "expect": {
+        "forwarded": false,
+        "status": 302,
+        "responseHeaders": { "Location": "https://elsewhere.example/denied" }
+      }
+    }
+  ]
+}
