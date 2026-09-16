@@ -1,15 +1,8 @@
-# Builds every plugin as a wasm module and ships them in a minimal image.
-# The image is consumed by an initContainer that copies the modules into a
+# Builds every plugin as a wasm module. An initContainer copies them into a
 # volume Traefik mounts as a localPlugin.
 #
-# TinyGo produces far smaller modules with no Go scheduler or GC, and Traefik
-# holds one instance per concurrent request, so the difference is resident
-# memory rather than disk. None of these plugins makes an outbound call, which
-# is the one thing TinyGo cannot do on wasip1: revocation is answered by
-# Traefik's forwardAuth middleware, not from inside a guest.
-#
 # -buildmode=c-shared is required: without it the module is a command exporting
-# _start, Traefik runs main, main returns and the module exits mid-request.
+# _start, so Traefik runs main and the module exits mid-request.
 ARG TINYGO_VERSION=0.40.0
 ARG BUSYBOX_VERSION=1.37.0-musl
 

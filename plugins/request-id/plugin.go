@@ -6,7 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 
-	"github.com/pvarki/golang-traefik-plugins/internal/guest"
+	"github.com/pvarki/golang-traefik-plugins/internal/strutil"
 )
 
 const (
@@ -20,7 +20,7 @@ type Config struct {
 }
 
 func (c Config) headerName() string {
-	return guest.OrDefault(c.HeaderName, defaultRequestIDHeader)
+	return strutil.OrDefault(c.HeaderName, defaultRequestIDHeader)
 }
 
 func newRequestID() (string, error) {
