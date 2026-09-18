@@ -9,7 +9,7 @@
 # the shared CI's `./...` hooks. Yaegi resolves imports GOPATH-style and never
 # reads them; they are shipped to match the layout Traefik documents.
 FROM busybox:1.37.0-musl AS production
-LABEL org.opencontainers.image.version="0.1.0+260911" \
+LABEL org.opencontainers.image.version="1.0.0+260918" \
       org.opencontainers.image.title="golang-traefik-plugins" \
       org.opencontainers.image.source="https://github.com/pvarki/golang-traefik-plugins"
 
