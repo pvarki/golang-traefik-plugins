@@ -1,4 +1,4 @@
-// Package traefik_callsign_redirect is the single place that decides what to
+// Package callsign_redirect is the single place that decides what to
 // do with the callsign validity verdict produced upstream by the
 // callsign-validity middleware.
 //
@@ -58,7 +58,6 @@ func CreateConfig() *Config {
 
 type Plugin struct {
 	next           http.Handler
-	name           string
 	logPrefix      string
 	validityHeader string
 	redirectURL    string
@@ -86,7 +85,6 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 
 	p := &Plugin{
 		next:           next,
-		name:           name,
 		logPrefix:      logPrefix,
 		validityHeader: validityHdr,
 		redirectURL:    strings.TrimSpace(config.RedirectURL),

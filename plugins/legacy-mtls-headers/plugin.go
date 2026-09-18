@@ -39,7 +39,6 @@ func CreateConfig() *Config {
 // Plugin injects legacy client certificate headers for upstream services.
 type Plugin struct {
 	next                        http.Handler
-	name                        string
 	logPrefix                   string
 	clientCertDNHeader          string
 	clientCertSerialHeader      string
@@ -77,7 +76,6 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 
 	return &Plugin{
 		next:                        next,
-		name:                        name,
 		logPrefix:                   logPrefix,
 		clientCertDNHeader:          clientCertDNHeader,
 		clientCertSerialHeader:      clientCertSerialHeader,
