@@ -57,34 +57,32 @@ func InterpretedFactory(dir, moduleName string) (Factory, error) {
 }
 
 func buildInterpreted(fnCreate, fnNew reflect.Value, config map[string]any, next http.Handler) (http.Handler, error) {
-	{
-		created := fnCreate.Call(nil)
-		if len(created) != 1 {
-			return nil, fmt.Errorf("plugin CreateConfig returned %d values", len(created))
-		}
-		cfg := created[0]
-		if err := applyConfig(cfg, config); err != nil {
-			return nil, err
-		}
-
-		results := fnNew.Call([]reflect.Value{
-			reflect.ValueOf(context.Background()),
-			reflect.ValueOf(next),
-			cfg,
-			reflect.ValueOf("yaegiverify"),
-		})
-		if len(results) != 2 {
-			return nil, fmt.Errorf("plugin New returned %d values", len(results))
-		}
-		if err, ok := results[1].Interface().(error); ok && err != nil {
-			return nil, err
-		}
-		handler, ok := results[0].Interface().(http.Handler)
-		if !ok {
-			return nil, errors.New("plugin New did not return an http.Handler")
-		}
-		return handler, nil
+	created := fnCreate.Call(nil)
+	if len(created) != 1 {
+		return nil, fmt.Errorf("plugin CreateConfig returned %d values", len(created))
 	}
+	cfg := created[0]
+	if err := applyConfig(cfg, config); err != nil {
+		return nil, err
+	}
+
+	results := fnNew.Call([]reflect.Value{
+		reflect.ValueOf(context.Background()),
+		reflect.ValueOf(next),
+		cfg,
+		reflect.ValueOf("yaegiverify"),
+	})
+	if len(results) != 2 {
+		return nil, fmt.Errorf("plugin New returned %d values", len(results))
+	}
+	if err, ok := results[1].Interface().(error); ok && err != nil {
+		return nil, err
+	}
+	handler, ok := results[0].Interface().(http.Handler)
+	if !ok {
+		return nil, errors.New("plugin New did not return an http.Handler")
+	}
+	return handler, nil
 }
 
 // stageSource copies the plugin's non-test sources into a throwaway GOPATH.

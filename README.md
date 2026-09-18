@@ -17,9 +17,10 @@ middleware, not from a plugin here.
 ## Layout
 
 Each plugin is a package whose `package` clause is the name Traefik derives from
-its module path — `traefik_request_id` for `github.com/pvarki/traefik-request-id`
-and so on. Traefik evaluates `<basePkg>.CreateConfig` and `<basePkg>.New`, so the
-clause and the module path have to agree.
+the last element of its module path, with `-` replaced by `_` — `request_id` for
+`github.com/pvarki/golang-traefik-plugins/plugins/request-id`, and so on. Traefik
+evaluates `<basePkg>.CreateConfig` and `<basePkg>.New`, so the clause and the
+module path have to agree.
 
 The repository is a single Go module so `go test ./...` and the shared CI hooks
 work at the root. The per-plugin `go.mod` files that Traefik's documented layout

@@ -27,7 +27,6 @@ func CreateConfig() *Config {
 
 type Plugin struct {
 	next       http.Handler
-	name       string
 	logPrefix  string
 	headerName string
 }
@@ -52,7 +51,6 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 
 	return &Plugin{
 		next:       next,
-		name:       name,
 		logPrefix:  logPrefix,
 		headerName: headerName,
 	}, nil
