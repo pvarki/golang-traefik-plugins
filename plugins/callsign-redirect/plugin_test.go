@@ -47,7 +47,7 @@ func verdict(validity, reason string) http.Header {
 		headers.Set(defaultValidityHeader, validity)
 	}
 	if reason != "" {
-		headers.Set(reasonHeader, reason)
+		headers.Set(defaultReasonHeader, reason)
 	}
 	return headers
 }
