@@ -3,7 +3,7 @@
 // callsign-validity middleware.
 //
 // It reads the validity header (default "Callsign-Valid"); "true" forwards
-// unchanged. Otherwise it reads the reason header ("Callsign-Valid-Reason") to
+// unchanged. Otherwise it reads the reason header (default "Callsign-Valid-Reason") to
 // pick an /error code (invalid -> unauthorized, no_cert -> mtls_fail, error ->
 // none) and acts in this order of precedence:
 //  1. the configured redirectURL, if set → redirect there verbatim; otherwise
@@ -32,8 +32,8 @@ const (
 	defaultRedirectStatus = http.StatusFound
 	validityTrue          = "true"
 
-	reasonHeader = "Callsign-Valid-Reason"
-	errorPath    = "/error"
+	defaultReasonHeader = "Callsign-Valid-Reason"
+	errorPath           = "/error"
 
 	// Reason values (set by callsign-validity) mapped to UI /error codes.
 	reasonInvalid    = "invalid"
@@ -44,6 +44,7 @@ const (
 
 type Config struct {
 	ValidityHeader string `json:"validityHeader,omitempty"`
+	ReasonHeader   string `json:"reasonHeader,omitempty"`
 	RedirectURL    string `json:"redirectURL,omitempty"`
 	RedirectStatus int    `json:"redirectStatus,omitempty"`
 	BaseDomain     string `json:"baseDomain,omitempty"`
@@ -52,6 +53,7 @@ type Config struct {
 func CreateConfig() *Config {
 	return &Config{
 		ValidityHeader: defaultValidityHeader,
+		ReasonHeader:   defaultReasonHeader,
 		RedirectStatus: defaultRedirectStatus,
 	}
 }
@@ -60,6 +62,7 @@ type Plugin struct {
 	next           http.Handler
 	logPrefix      string
 	validityHeader string
+	reasonHeader   string
 	redirectURL    string
 	redirectStatus int
 	baseDomain     string
@@ -78,6 +81,10 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 	if validityHdr == "" {
 		validityHdr = defaultValidityHeader
 	}
+	reasonHdr := strings.TrimSpace(config.ReasonHeader)
+	if reasonHdr == "" {
+		reasonHdr = defaultReasonHeader
+	}
 	status := config.RedirectStatus
 	if status == 0 {
 		status = defaultRedirectStatus
@@ -87,13 +94,14 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		next:           next,
 		logPrefix:      logPrefix,
 		validityHeader: validityHdr,
+		reasonHeader:   reasonHdr,
 		redirectURL:    strings.TrimSpace(config.RedirectURL),
 		redirectStatus: status,
 		baseDomain:     strings.ToLower(strings.TrimSpace(config.BaseDomain)),
 	}
 
-	log.Printf("INFO %s initialized; validityHeader=%s redirectURL=%q baseDomain=%q status=%d",
-		logPrefix, p.validityHeader, p.redirectURL, p.baseDomain, p.redirectStatus)
+	log.Printf("INFO %s initialized; validityHeader=%s reasonHeader=%s redirectURL=%q baseDomain=%q status=%d",
+		logPrefix, p.validityHeader, p.reasonHeader, p.redirectURL, p.baseDomain, p.redirectStatus)
 	return p, nil
 }
 
@@ -114,7 +122,7 @@ func (p *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	// Map the failure reason to a UI /error code.
 	code := codeMTLSFail
-	switch strings.ToLower(strings.TrimSpace(req.Header.Get(reasonHeader))) {
+	switch strings.ToLower(strings.TrimSpace(req.Header.Get(p.reasonHeader))) {
 	case reasonInvalid:
 		code = codeUnauthorized
 	case reasonError:

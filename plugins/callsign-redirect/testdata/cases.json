@@ -139,6 +139,29 @@
         "status": 302,
         "responseHeaders": { "Location": "https://elsewhere.example/denied" }
       }
+    },
+    {
+      "name": "a configured reasonHeader is read instead of the default",
+      "config": {
+        "validityHeader": "OD-Callsign-Valid",
+        "reasonHeader": "OD-Callsign-Valid-Reason",
+        "redirectStatus": 302,
+        "baseDomain": "example.org"
+      },
+      "host": "mtls.example.org",
+      "tls": "empty",
+      "requestHeaders": {
+        "OD-Callsign-Valid": "false",
+        "OD-Callsign-Valid-Reason": "invalid",
+        "Callsign-Valid-Reason": "no_cert"
+      },
+      "expect": {
+        "forwarded": false,
+        "status": 302,
+        "responseHeaders": {
+          "Location": "https://example.org/error?code=unauthorized"
+        }
+      }
     }
   ]
 }
